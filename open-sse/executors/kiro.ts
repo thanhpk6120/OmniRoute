@@ -270,6 +270,33 @@ export class KiroExecutor extends BaseExecutor {
     };
 
     const transformStream = new TransformStream({
+      start(controller) {
+        // Emit a role-only readiness chunk before any upstream event arrives.
+        // The router-level ensureStreamReadiness() detector treats an OpenAI-
+        // style role-only chunk as a readiness signal (see streamReadiness.ts
+        // ::hasOpenAiAssistantRoleStart). Without this, Kiro/CodeWhisperer
+        // streams that start with non-"useful" frames (e.g. messageStopEvent,
+        // contextUsageEvent, empty assistantResponseEvent, or extended-thinking
+        // pauses) would trip the 30s STREAM_READINESS_TIMEOUT_MS even though
+        // the upstream is healthy. The downstream client just sees an extra
+        // role chunk, which is valid OpenAI streaming protocol.
+        const startChunk: JsonRecord = {
+          id: responseId,
+          object: "chat.completion.chunk",
+          created,
+          model,
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant" },
+              finish_reason: null,
+            },
+          ],
+        };
+        chunkIndex++;
+        controller.enqueue(TEXT_ENCODER.encode(`data: ${JSON.stringify(startChunk)}\n\n`));
+      },
+
       async transform(chunk, controller) {
         buffer.push(chunk);
 

@@ -162,6 +162,40 @@ export function translateRequest(
     );
   }
 
+  // Handle Claude Code's system field format: [{type:"text", text:"..."}]
+  // Convert to messages[] format for non-Claude targets that don't natively support it
+  if (
+    result.system !== undefined &&
+    targetFormat !== FORMATS.CLAUDE &&
+    targetFormat !== FORMATS.ANTHROPIC
+  ) {
+    const sysContent = Array.isArray(result.system)
+      ? result.system
+          .map((s) => (typeof s === "object" && s !== null ? s.text || "" : String(s)))
+          .filter(Boolean)
+          .join("\n\n")
+      : typeof result.system === "string"
+        ? result.system
+        : String(result.system || "");
+
+    if (sysContent) {
+      // Prepend system message to messages array
+      if (!result.messages || !Array.isArray(result.messages)) {
+        result.messages = [{ role: "system", content: sysContent }];
+      } else {
+        // Check if there's already a system message
+        const hasSystemMsg = result.messages.some(
+          (m) => m.role === "system" || m.role === "developer"
+        );
+        if (!hasSystemMsg) {
+          result.messages = [{ role: "system", content: sysContent }, ...result.messages];
+        }
+      }
+    }
+    // Remove the system field since we've converted it to messages
+    delete result.system;
+  }
+
   // If same format, skip translation steps
   if (sourceFormat !== targetFormat) {
     // Check for direct translation path first (e.g., Claude → Gemini)

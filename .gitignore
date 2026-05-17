@@ -150,3 +150,7 @@ bun.lock
 
 # Private environment variables for .http-client
 http-client.private.env.json
+
+.file-test/
+local_cache/
+test*

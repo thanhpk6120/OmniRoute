@@ -125,3 +125,37 @@ test("API bridge proxy timeout defaults to the long upstream request window", ()
   assert.equal(config.proxyTimeoutMs, 600000);
   assert.equal(config.serverRequestTimeoutMs, 600000);
 });
+
+test("getStreamReadinessTimeoutMs returns the global default when no provider is given", () => {
+  const ms = runtimeTimeouts.getStreamReadinessTimeoutMs(null, {});
+  assert.equal(ms, runtimeTimeouts.DEFAULT_STREAM_READINESS_TIMEOUT_MS);
+});
+
+test("getStreamReadinessTimeoutMs falls back to provider-specific default for known providers", () => {
+  // Kiro is in PROVIDER_STREAM_READINESS_TIMEOUT_DEFAULTS_MS — it must get a
+  // longer-than-global readiness budget so Claude Opus extended thinking on
+  // AWS CodeWhisperer doesn't trip the zombie-stream detector.
+  const ms = runtimeTimeouts.getStreamReadinessTimeoutMs("kiro", {});
+  assert.equal(ms, runtimeTimeouts.PROVIDER_STREAM_READINESS_TIMEOUT_DEFAULTS_MS.kiro);
+  assert.ok(ms > runtimeTimeouts.DEFAULT_STREAM_READINESS_TIMEOUT_MS);
+});
+
+test("getStreamReadinessTimeoutMs honors per-provider STREAM_READINESS_TIMEOUT_MS_<PROVIDER> env override", () => {
+  const ms = runtimeTimeouts.getStreamReadinessTimeoutMs("kiro", {
+    STREAM_READINESS_TIMEOUT_MS_KIRO: "120000",
+  });
+  assert.equal(ms, 120000);
+});
+
+test("getStreamReadinessTimeoutMs respects an operator-raised global timeout above provider default", () => {
+  const ms = runtimeTimeouts.getStreamReadinessTimeoutMs("kiro", {
+    STREAM_READINESS_TIMEOUT_MS: "180000",
+  });
+  // Operator chose a higher global, so honor it for Kiro too.
+  assert.equal(ms, 180000);
+});
+
+test("getStreamReadinessTimeoutMs returns the global default for unknown providers", () => {
+  const ms = runtimeTimeouts.getStreamReadinessTimeoutMs("openai", {});
+  assert.equal(ms, runtimeTimeouts.DEFAULT_STREAM_READINESS_TIMEOUT_MS);
+});

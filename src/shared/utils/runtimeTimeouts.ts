@@ -10,6 +10,15 @@ export const DEFAULT_FETCH_TIMEOUT_MS = 600_000;
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 600_000;
 export const DEFAULT_SSE_HEARTBEAT_INTERVAL_MS = 15_000;
 export const DEFAULT_STREAM_READINESS_TIMEOUT_MS = 80_000;
+
+// Per-provider readiness timeout defaults (ms). Providers known to occasionally
+// take longer than the global default before emitting a useful frame (e.g.
+// Kiro/AWS CodeWhisperer with Claude Opus extended thinking) get a higher
+// budget so combo fallback doesn't trip on healthy-but-slow streams. Override
+// any of these via STREAM_READINESS_TIMEOUT_MS_<PROVIDER> env vars.
+export const PROVIDER_STREAM_READINESS_TIMEOUT_DEFAULTS_MS: Record<string, number> = {
+  kiro: 90_000,
+};
 export const DEFAULT_FETCH_CONNECT_TIMEOUT_MS = 30_000;
 export const DEFAULT_FETCH_KEEPALIVE_TIMEOUT_MS = 4_000;
 export const DEFAULT_API_BRIDGE_PROXY_TIMEOUT_MS = 600_000;
@@ -151,6 +160,44 @@ export function getStainlessTimeoutSeconds(
 ): number {
   const { fetchTimeoutMs } = getUpstreamTimeoutConfig(env, logger);
   return Math.max(1, Math.ceil(fetchTimeoutMs / 1_000));
+}
+
+/**
+ * Resolve the stream-readiness timeout for a given provider.
+ *
+ * Resolution order (first match wins):
+ *   1. STREAM_READINESS_TIMEOUT_MS_<PROVIDER_UPPER>  (e.g. STREAM_READINESS_TIMEOUT_MS_KIRO)
+ *   2. PROVIDER_STREAM_READINESS_TIMEOUT_DEFAULTS_MS[provider]
+ *   3. STREAM_READINESS_TIMEOUT_MS  (global override, via getUpstreamTimeoutConfig)
+ *   4. DEFAULT_STREAM_READINESS_TIMEOUT_MS
+ *
+ * Pass `provider=null` (or unknown) to get the global default.
+ */
+export function getStreamReadinessTimeoutMs(
+  provider?: string | null,
+  env: EnvSource = process.env,
+  logger?: TimeoutLogger
+): number {
+  const globalTimeoutMs = getUpstreamTimeoutConfig(env, logger).streamReadinessTimeoutMs;
+
+  if (!provider) return globalTimeoutMs;
+
+  const normalized = provider.trim().toLowerCase();
+  if (!normalized) return globalTimeoutMs;
+
+  const envName = `STREAM_READINESS_TIMEOUT_MS_${normalized.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+  if (hasEnvValue(env, envName)) {
+    return readTimeoutMs(env, envName, globalTimeoutMs, { allowZero: true, logger });
+  }
+
+  const providerDefault = PROVIDER_STREAM_READINESS_TIMEOUT_DEFAULTS_MS[normalized];
+  if (typeof providerDefault === "number" && providerDefault > 0) {
+    // If the operator explicitly raised the global timeout above the provider
+    // default, honor the operator's intent.
+    return Math.max(providerDefault, globalTimeoutMs);
+  }
+
+  return globalTimeoutMs;
 }
 
 export function getTlsClientTimeoutConfig(
