@@ -106,9 +106,9 @@ test("providers validate route forwards baseUrl to built-in specialty validators
   }
 });
 
-test("providers validate route blocks private baseUrl values by default", async () => {
+test("providers validate route blocks private baseUrl values when SSRF guard is explicitly enabled", async () => {
   await resetStorage();
-  delete process.env.OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS;
+  process.env.OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS = "false";
 
   let called = false;
   const originalFetch = globalThis.fetch;
@@ -153,9 +153,9 @@ test("providers validate route blocks private baseUrl values by default", async 
   }
 });
 
-test("providers validate route allows private baseUrl values when opt-in env is enabled", async () => {
+test("providers validate route allows private baseUrl values by default", async () => {
   await resetStorage();
-  process.env.OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS = "true";
+  delete process.env.OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS;
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {

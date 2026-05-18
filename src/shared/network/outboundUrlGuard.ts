@@ -120,15 +120,31 @@ export function parseAndValidatePublicUrl(input: string | URL) {
   return url;
 }
 
+const FALSE_ENV_VALUES = new Set(["0", "false", "no", "off"]);
+
 export function arePrivateProviderUrlsAllowed() {
+  // Default policy: allow private/local provider URLs so self-hosted providers
+  // (LM Studio, Ollama, vLLM, Llamafile, Triton, SearXNG, internal LAN routers,
+  // SSH-tunnelled localhost, etc.) work out of the box. Operators that need the
+  // strict SSRF guard for shared/public deployments can re-enable it by
+  // explicitly setting one of:
+  //   OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS=false
+  //   OUTBOUND_SSRF_GUARD_ENABLED=true
   const value = process.env[PRIVATE_PROVIDER_URLS_ENV];
-  if (value && TRUE_ENV_VALUES.has(value.trim().toLowerCase())) return true;
+  if (value !== undefined) {
+    const normalized = value.trim().toLowerCase();
+    if (FALSE_ENV_VALUES.has(normalized)) return false;
+    if (TRUE_ENV_VALUES.has(normalized)) return true;
+  }
 
   const legacyValue = process.env["OUTBOUND_SSRF_GUARD_ENABLED"];
-  if (legacyValue && ["false", "0", "no", "off"].includes(legacyValue.trim().toLowerCase()))
-    return true;
+  if (legacyValue !== undefined) {
+    const normalizedLegacy = legacyValue.trim().toLowerCase();
+    if (TRUE_ENV_VALUES.has(normalizedLegacy)) return false;
+    if (FALSE_ENV_VALUES.has(normalizedLegacy)) return true;
+  }
 
-  return false;
+  return true;
 }
 
 export function getProviderOutboundGuard(): OutboundUrlGuardMode {

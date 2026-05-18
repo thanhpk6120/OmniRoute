@@ -95,8 +95,8 @@ test("provider models route rejects OpenAI-compatible providers without a base U
   });
 });
 
-test("provider models route blocks private OpenAI-compatible base URLs", async () => {
-  delete process.env.OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS;
+test("provider models route blocks private OpenAI-compatible base URLs when SSRF guard is explicitly enabled", async () => {
+  process.env.OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS = "false";
 
   const connection = await seedConnection("openai-compatible-private", {
     apiKey: "sk-openai-compatible",

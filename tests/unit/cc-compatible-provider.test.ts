@@ -879,8 +879,8 @@ test("provider-nodes validate route rejects invalid JSON and schema errors", asy
   assert.equal(invalidBodyPayload.error.details.length >= 1, true);
 });
 
-test("provider-nodes validate route blocks private provider hosts before fetch", async () => {
-  delete process.env.OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS;
+test("provider-nodes validate route blocks private provider hosts when SSRF guard is explicitly enabled", async () => {
+  process.env.OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS = "false";
 
   let called = false;
   globalThis.fetch = async () => {
