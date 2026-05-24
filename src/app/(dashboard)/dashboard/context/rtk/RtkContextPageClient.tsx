@@ -68,6 +68,14 @@ export default function RtkContextPageClient() {
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [saving, setSaving] = useState(false);
   const [viewMode, setViewMode] = useState<"simple" | "advanced">("simple");
+  const [masterEnabled, setMasterEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    fetch("/api/settings/compression")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => setMasterEnabled(data?.enabled ?? false))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     fetch("/api/context/rtk/filters")
@@ -169,6 +177,13 @@ export default function RtkContextPageClient() {
           </div>
         ))}
       </section>
+
+      {masterEnabled === false && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-300 flex items-start gap-2">
+          <span className="material-symbols-outlined text-[18px]">info</span>
+          <p>{t("masterSwitchOffAlert")}</p>
+        </div>
+      )}
 
       {config && (
         <section className="rounded-lg border border-border bg-surface p-4">

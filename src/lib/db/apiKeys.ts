@@ -109,6 +109,7 @@ interface ApiKeyView extends JsonRecord {
   isActive: boolean;
   accessSchedule: AccessSchedule | null;
   rateLimits: RateLimitRule[] | null;
+  scopes: string[];
 }
 
 // LRU cache for API key validation (valid keys only)
@@ -119,8 +120,8 @@ const CACHE_TTL = 60 * 1000; // 1 minute TTL
 const LAST_USED_UPDATE_TTL = 5 * 60 * 1000;
 const MAX_CACHE_SIZE = 1000;
 
-// Compiled regex cache for wildcard patterns
-const _regexCache = new Map<string, RegExp>();
+// Wildcard scope matching is now handled by `matchesWildcardPattern`
+// (deterministic, no RegExp from dynamic strings).
 
 const API_KEY_COLUMN_FALLBACKS = [
   { name: "allowed_models", definition: "allowed_models TEXT" },
@@ -187,6 +188,7 @@ async function deleteRedisAuthCacheEntry(keyHash: unknown): Promise<void> {
   try {
     const { getRedisClient } = await import("@/shared/utils/rateLimiter");
     const redis = getRedisClient();
+    if (!redis) return; // #2357: Redis is optional; skip when disabled.
     await redis.del(`auth:api_key:${keyHash}`);
   } catch {
     // Redis is an optimization for auth caching; SQLite remains authoritative.
@@ -235,21 +237,57 @@ function evictIfNeeded<TKey, TValue>(cache: Map<TKey, TValue>) {
 }
 
 /**
- * Get or compile regex for wildcard pattern
+ * Match an API-key wildcard scope pattern against a model id without
+ * compiling a RegExp from string concatenation (avoid ReDoS exposure on
+ * operator-supplied patterns and silence the Semgrep `js/regex-injection`
+ * advisory for `new RegExp(<dynamic>)`).
+ *
+ * Supported pattern syntax (only what real scopes use):
+ *   - literal segments
+ *   - `*` matches any run of characters, but does NOT cross `/`
+ *
+ * Walks the pattern token-by-token: each `*` consumes the longest possible
+ * run within the current path segment, then the next literal anchor must
+ * appear before the segment boundary. Worst-case complexity is O(n*m)
+ * where n = pattern length, m = candidate length — there is no nested
+ * backtracking that could explode adversarially.
  */
-function getWildcardRegex(pattern: string): RegExp {
-  let regex = _regexCache.get(pattern);
-  if (!regex) {
-    const regexStr = pattern.replace(/\*/g, ".*");
-    regex = new RegExp(`^${regexStr}$`);
-    _regexCache.set(pattern, regex);
-    // Prevent unbounded growth
-    if (_regexCache.size > 100) {
-      const firstKey = _regexCache.keys().next().value;
-      if (firstKey) _regexCache.delete(firstKey);
-    }
+function matchesWildcardPattern(pattern: string, candidate: string): boolean {
+  const pSegs = pattern.split("/");
+  const cSegs = candidate.split("/");
+  if (pSegs.length !== cSegs.length) return false;
+  for (let i = 0; i < pSegs.length; i++) {
+    if (!segmentMatchesWildcard(pSegs[i], cSegs[i])) return false;
   }
-  return regex;
+  return true;
+}
+
+function segmentMatchesWildcard(pattern: string, segment: string): boolean {
+  if (pattern === segment) return true;
+  if (!pattern.includes("*")) return false;
+  const parts = pattern.split("*");
+  // Anchor first literal to the start.
+  let cursor = 0;
+  const first = parts[0];
+  if (first) {
+    if (!segment.startsWith(first)) return false;
+    cursor = first.length;
+  }
+  // Anchor last literal to the end.
+  const last = parts[parts.length - 1];
+  const endLimit = segment.length - last.length;
+  if (last) {
+    if (!segment.endsWith(last)) return false;
+  }
+  // Each middle literal must appear in order between cursor and endLimit.
+  for (let i = 1; i < parts.length - 1; i++) {
+    const piece = parts[i];
+    if (!piece) continue;
+    const idx = segment.indexOf(piece, cursor);
+    if (idx === -1 || idx + piece.length > endLimit) return false;
+    cursor = idx + piece.length;
+  }
+  return cursor <= endLimit;
 }
 
 function ensureApiKeyColumn(
@@ -342,6 +380,7 @@ export async function getApiKeys() {
     camelRow.accessSchedule = parseAccessSchedule(camelRow.accessSchedule);
     camelRow.rateLimits = parseRateLimits(camelRow.rateLimits);
     camelRow.isBanned = parseIsBanned(camelRow.isBanned);
+    camelRow.scopes = parseStringList((camelRow as JsonRecord).scopes);
     if (typeof camelRow.id === "string" && camelRow.id.length > 0) {
       setNoLog(camelRow.id, camelRow.noLog === true);
     }
@@ -363,6 +402,7 @@ export async function getApiKeyById(id: string) {
   camelRow.accessSchedule = parseAccessSchedule(camelRow.accessSchedule);
   camelRow.rateLimits = parseRateLimits(camelRow.rateLimits);
   camelRow.isBanned = parseIsBanned(camelRow.isBanned);
+  camelRow.scopes = parseStringList((camelRow as JsonRecord).scopes);
   if (typeof camelRow.id === "string" && camelRow.id.length > 0) {
     setNoLog(camelRow.id, camelRow.noLog === true);
   }
@@ -725,14 +765,60 @@ export async function updateApiKeyPermissions(
   }
 
   const scopesUpdate = (normalized as Record<string, unknown>).scopes;
+  const nextScopes: string[] = Array.isArray(scopesUpdate)
+    ? (scopesUpdate as unknown[]).filter((s): s is string => typeof s === "string")
+    : [];
+  // Capture previous scopes BEFORE the UPDATE so we can compare for the audit
+  // event below. We only fetch when the caller is actually changing scopes —
+  // a privileged change ("manage" grants management API surface access) that
+  // must always leave an audit trail per OWASP A09 / SOC2 CC7.2.
+  //
+  // The previous-scopes SELECT and the row UPDATE are wrapped in a single
+  // transaction so a concurrent writer cannot slip in between and make the
+  // audit log lie about what changed. SQLite is single-writer in practice,
+  // but the transaction also gives us atomicity if the underlying driver
+  // ever swaps to a backend that allows multiple writers (sqljsAdapter /
+  // nodeSqliteAdapter fall-back per v3.8.1 db driver cascade).
+  let previousScopes: string[] = [];
+  let changedRows = 0;
   if (scopesUpdate !== undefined) {
     updates.push("scopes = @scopes");
-    params.scopes = JSON.stringify(Array.isArray(scopesUpdate) ? scopesUpdate : []);
+    params.scopes = JSON.stringify(nextScopes);
+
+    // SELECT-then-UPDATE wrapped in an explicit transaction so a concurrent
+    // writer can't slip between the read and the write and make the audit
+    // log lie about what changed. `exec("BEGIN"/"COMMIT")` works across all
+    // driver backends (better-sqlite3 / node:sqlite / sql.js) wired by the
+    // v3.8.1 db driver cascade — none of them expose `db.transaction()` via
+    // ApiKeysDbLike, which is intentionally minimal.
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const prevRow = db
+        .prepare<{ scopes: string | null }>("SELECT scopes FROM api_keys WHERE id = ?")
+        .get(id);
+      previousScopes = parseStringList(prevRow?.scopes ?? null);
+      const upd = db
+        .prepare(`UPDATE api_keys SET ${updates.join(", ")} WHERE id = @id`)
+        .run(params);
+      changedRows = upd.changes ?? 0;
+      db.exec("COMMIT");
+    } catch (err) {
+      // Guard the ROLLBACK: if it throws (e.g. transaction already ended
+      // due to an implicit commit, or backend in a bad state), the original
+      // error from the try block is the actionable one — don't shadow it.
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // swallow: original error is more important
+      }
+      throw err;
+    }
+  } else {
+    const upd = db.prepare(`UPDATE api_keys SET ${updates.join(", ")} WHERE id = @id`).run(params);
+    changedRows = upd.changes ?? 0;
   }
 
-  const result = db.prepare(`UPDATE api_keys SET ${updates.join(", ")} WHERE id = @id`).run(params);
-
-  if (result.changes === 0) return false;
+  if (changedRows === 0) return false;
 
   const { logAuditEvent } = await import("@/lib/compliance");
 
@@ -748,6 +834,38 @@ export async function updateApiKeyPermissions(
       action: normalized.isActive ? "apiKey.activate" : "apiKey.deactivate",
       target: id,
     });
+  }
+
+  if (scopesUpdate !== undefined) {
+    // Compare prev vs next scope sets and emit a dedicated audit event when
+    // the privileged "manage" scope is granted or revoked. Other scope
+    // mutations also emit a generic "apiKey.scopes.update" so the audit log
+    // captures the full change history (action + details).
+    const hadManage = previousScopes.includes("manage");
+    const hasManage = nextScopes.includes("manage");
+    if (!hadManage && hasManage) {
+      logAuditEvent({
+        action: "apiKey.scopes.grant",
+        target: id,
+        details: { scopes: nextScopes, previous: previousScopes },
+      });
+    } else if (hadManage && !hasManage) {
+      logAuditEvent({
+        action: "apiKey.scopes.revoke",
+        target: id,
+        details: { scopes: nextScopes, previous: previousScopes },
+      });
+    } else if (
+      previousScopes.length !== nextScopes.length ||
+      previousScopes.some((s) => !nextScopes.includes(s)) ||
+      nextScopes.some((s) => !previousScopes.includes(s))
+    ) {
+      logAuditEvent({
+        action: "apiKey.scopes.update",
+        target: id,
+        details: { scopes: nextScopes, previous: previousScopes },
+      });
+    }
   }
 
   if (normalized.noLog !== undefined) {
@@ -858,6 +976,7 @@ export async function validateApiKey(key: string | null | undefined) {
     try {
       const { getRedisClient } = await import("@/shared/utils/rateLimiter");
       const redis = getRedisClient();
+      if (!redis) throw new Error("redis-disabled"); // #2357: optional
       const redisKey = `auth:api_key:${hashedKey}`;
       const redisData = await redis.get(redisKey);
       if (redisData) {
@@ -909,6 +1028,9 @@ export async function validateApiKey(key: string | null | undefined) {
     try {
       const { getRedisClient } = await import("@/shared/utils/rateLimiter");
       const redis = getRedisClient();
+      // #2357: Redis is optional; throw so the catch below skips the write
+      // without affecting the function's `Promise<boolean>` return type.
+      if (!redis) throw new Error("redis-disabled");
       const redisKey = `auth:api_key:${hashedKey}`;
       await redis.set(
         redisKey,
@@ -944,6 +1066,28 @@ export async function getApiKeyMetadata(
 
   // persistent env-var key support (persistent passthrough keys) (#1350)
   if (isConfiguredEnvApiKey(key)) {
+    // ─── Env-key management-scope bypass ──────────────────────────────────
+    // The deployment-time env key (`OMNIROUTE_API_KEY` / `ROUTER_API_KEY`)
+    // is granted the "manage" scope unconditionally. This is intentional:
+    //
+    //   1. The env key never exists in the SQLite `api_keys` table, so the
+    //      DB-backed scopes column does not apply. We synthesize the
+    //      metadata record here.
+    //   2. The operator who set the env var is presumed to be the deployment
+    //      owner; rotating (or unsetting) the env var is the only way to
+    //      rotate this privilege. There is no UI to change it.
+    //   3. Management API access via the env key still passes through
+    //      `requireManagementAuth` → `hasManageScope`, so policy decisions
+    //      remain centralised in `src/server/authz/*`.
+    //   4. Requests authenticated by the env key are tagged with
+    //      `id: "env-key"` for downstream audit-log emitters, making it
+    //      possible to distinguish env-key activity from user-created keys
+    //      that happen to also hold "manage".
+    //
+    // DO NOT remove "manage" from this list — that would break the
+    // deployment-time bootstrap path that operators rely on for headless
+    // / CI / first-boot scenarios. If you need to disable env-key access,
+    // unset the env var instead.
     return {
       id: "env-key",
       name: "Environment Key",
@@ -1081,10 +1225,10 @@ export async function isModelAllowedForKey(
         break;
       }
     }
-    // Support wildcard patterns using cached regex
+    // Support wildcard patterns via deterministic matcher (no RegExp
+    // compilation from operator input — avoids ReDoS exposure).
     if (pattern.includes("*")) {
-      const regex = getWildcardRegex(pattern);
-      if (regex.test(modelId)) {
+      if (matchesWildcardPattern(pattern, modelId)) {
         allowed = true;
         break;
       }
@@ -1120,7 +1264,6 @@ export function clearApiKeyCaches() {
   invalidateCaches();
   _lastUsedUpdateCache.clear();
   _modelPermissionCache.clear();
-  _regexCache.clear();
 }
 
 /**

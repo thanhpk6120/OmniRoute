@@ -13,7 +13,11 @@ import {
 } from "./claudeCodeConstraints.ts";
 import { obfuscateInBody } from "./claudeCodeObfuscation.ts";
 import { applySystemTransformPipeline, PROVIDER_CC_BRIDGE } from "./systemTransforms.ts";
-import { fixToolPairs, stripTrailingAssistantOrphanToolUse } from "./contextManager.ts";
+import {
+  fixToolPairs,
+  fixToolAdjacency,
+  stripTrailingAssistantOrphanToolUse,
+} from "./contextManager.ts";
 
 /**
  * `anthropic-compatible-cc-*` targets Anthropic relay gateways that only accept
@@ -35,9 +39,9 @@ export const CLAUDE_CODE_COMPATIBLE_ANTHROPIC_BETA = [
   "interleaved-thinking-2025-05-14",
   "effort-2025-11-24",
 ].join(",");
-export const CLAUDE_CODE_COMPATIBLE_VERSION = "2.1.137";
-export const CLAUDE_CODE_COMPATIBLE_USER_AGENT = "claude-cli/2.1.137 (external, sdk-cli)";
-export const CLAUDE_CODE_COMPATIBLE_STAINLESS_PACKAGE_VERSION = "0.81.0";
+export const CLAUDE_CODE_COMPATIBLE_VERSION = "2.1.146";
+export const CLAUDE_CODE_COMPATIBLE_USER_AGENT = "claude-cli/2.1.146 (external, sdk-cli)";
+export const CLAUDE_CODE_COMPATIBLE_STAINLESS_PACKAGE_VERSION = "0.94.0";
 export const CLAUDE_CODE_COMPATIBLE_STAINLESS_RUNTIME_VERSION = "v24.3.0";
 export const CONTEXT_1M_BETA_HEADER = "context-1m-2025-08-07";
 const CLAUDE_CODE_COMPATIBLE_DEFAULT_SYSTEM_BLOCKS = [
@@ -46,13 +50,7 @@ const CLAUDE_CODE_COMPATIBLE_DEFAULT_SYSTEM_BLOCKS = [
     text: "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
   },
 ];
-const CONTEXT_1M_SUPPORTED_MODELS = [
-  "claude-opus-4-7",
-  "claude-opus-4-6",
-  "claude-sonnet-4-6",
-  "claude-sonnet-4-5",
-  "claude-sonnet-4",
-];
+const CONTEXT_1M_SUPPORTED_MODELS = ["claude-opus-4-7", "claude-opus-4-6"];
 export const CLAUDE_CODE_COMPATIBLE_STAINLESS_TIMEOUT_SECONDS = getStainlessTimeoutSeconds(
   process.env
 );
@@ -79,6 +77,7 @@ type BuildRequestOptions = {
   now?: Date;
   sessionId?: string | null;
   preserveCacheControl?: boolean;
+  preserveClaudeMessages?: boolean;
 };
 
 function supportsClaudeXHighEffort(model: string | null | undefined): boolean {
@@ -228,10 +227,13 @@ export function buildClaudeCodeCompatibleRequest({
   cwd = process.cwd(),
   sessionId,
   preserveCacheControl = false,
+  preserveClaudeMessages = false,
 }: BuildRequestOptions) {
   const normalized = normalizedBody || {};
   const preparedClaudeBody = claudeBody
-    ? prepareClaudeCodeCompatibleBody(claudeBody, preserveCacheControl)
+    ? preserveClaudeMessages
+      ? prepareClaudeCodeCompatibleSemanticBody(claudeBody)
+      : prepareClaudeCodeCompatibleBody(claudeBody, preserveCacheControl)
     : null;
   const normalizedMessages = Array.isArray(normalized.messages)
     ? (normalized.messages as MessageLike[])
@@ -242,13 +244,18 @@ export function buildClaudeCodeCompatibleRequest({
       : null;
   const effectiveClaudeBody = preparedClaudeBody || extractedClaudeBody;
   const messages = effectiveClaudeBody
-    ? buildClaudeCodeCompatibleMessagesFromClaude(
-        effectiveClaudeBody.messages as MessageLike[],
-        preserveCacheControl
-      )
+    ? preserveClaudeMessages && preparedClaudeBody
+      ? cloneClaudeCodeCompatibleMessagesFromClaude(
+          effectiveClaudeBody.messages as MessageLike[],
+          preserveCacheControl
+        )
+      : buildClaudeCodeCompatibleMessagesFromClaude(
+          effectiveClaudeBody.messages as MessageLike[],
+          preserveCacheControl
+        )
     : buildClaudeCodeCompatibleMessages(normalizedMessages);
   const system = buildClaudeCodeCompatibleSystemBlocks({
-    messages: normalizedMessages,
+    messages: preserveClaudeMessages ? [] : normalizedMessages,
     systemBlocks: effectiveClaudeBody?.system as Record<string, unknown>[] | undefined,
     preserveCacheControl,
   });
@@ -364,7 +371,12 @@ export async function buildAndSignClaudeCodeRequest(
     const b = body as Record<string, unknown>;
     if (Array.isArray(b.messages)) {
       const fixed = fixToolPairs(b.messages as Record<string, unknown>[]);
-      b.messages = stripTrailingAssistantOrphanToolUse(fixed);
+      const adjacent = fixToolAdjacency(fixed);
+      // fixToolAdjacency can leave orphan tool_result blocks behind when it
+      // strips a tool_use whose tool_result wasn't in the next message.
+      // Re-pair to drop those orphans (discussion #2410).
+      const cleaned = fixToolPairs(adjacent);
+      b.messages = stripTrailingAssistantOrphanToolUse(cleaned);
     }
   }
 
@@ -616,6 +628,30 @@ function buildClaudeCodeCompatibleMessagesFromClaude(
   return merged;
 }
 
+function cloneClaudeCodeCompatibleMessagesFromClaude(
+  messages: MessageLike[] | undefined,
+  preserveCacheControl: boolean
+) {
+  const cloned = Array.isArray(messages)
+    ? messages
+        .map((message) => cloneValue(message) as MessageLike)
+        .filter((message) => {
+          const role = String(message?.role || "").toLowerCase();
+          return role !== "system" && role !== "developer";
+        })
+    : [];
+
+  if (!preserveCacheControl) {
+    for (const message of cloned) {
+      if (Array.isArray(message.content)) {
+        stripCacheControlFromContentBlocks(message.content as Array<Record<string, unknown>>);
+      }
+    }
+  }
+
+  return cloned;
+}
+
 function buildClaudeCodeCompatibleSystemBlocks({
   messages,
   systemBlocks,
@@ -792,6 +828,39 @@ function prepareClaudeCodeCompatibleBody(
   );
 
   return readRecord(prepared);
+}
+
+function prepareClaudeCodeCompatibleSemanticBody(claudeBody: Record<string, unknown>) {
+  const rawMessages = Array.isArray(claudeBody.messages)
+    ? (claudeBody.messages as MessageLike[])
+    : [];
+
+  const systemBlocks = normalizeClaudeSystemInput(claudeBody.system);
+  const systemFromMessages = extractCustomSystemBlocks(rawMessages);
+  const mergedSystem = [...systemBlocks, ...systemFromMessages];
+
+  const normalizedMessages = rawMessages.filter((message) => {
+    const role = String(message?.role || "").toLowerCase();
+    return role !== "system" && role !== "developer";
+  });
+
+  const prepared: Record<string, unknown> = {
+    system: mergedSystem,
+    messages: normalizedMessages,
+    tools: normalizeClaudeToolInput(claudeBody.tools),
+    thinking: (readRecord(cloneValue(claudeBody.thinking)) || null) as Record<
+      string,
+      unknown
+    > | null,
+  };
+
+  const metadata = readRecord(cloneValue(claudeBody.metadata));
+  if (metadata) prepared.metadata = metadata;
+
+  const outputConfig = readRecord(cloneValue(claudeBody.output_config));
+  if (outputConfig) prepared.output_config = outputConfig;
+
+  return prepared;
 }
 
 function extractClaudeBodyFromSource(
@@ -1103,7 +1172,9 @@ function readNestedString(
     if (!current || typeof current !== "object" || Array.isArray(current)) {
       return null;
     }
-    current = (current as Record<string, unknown>)[key];
+    if (key === "__proto__" || key === "constructor" || key === "prototype") return null;
+    if (!Object.prototype.hasOwnProperty.call(current, key)) return null;
+    current = Reflect.get(current as object, key);
   }
   return toNonEmptyString(current);
 }

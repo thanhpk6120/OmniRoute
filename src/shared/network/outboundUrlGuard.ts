@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { resolveFeatureFlag } from "@/shared/utils/featureFlags";
 
 const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 
@@ -142,6 +143,19 @@ export function arePrivateProviderUrlsAllowed() {
     const normalizedLegacy = legacyValue.trim().toLowerCase();
     if (TRUE_ENV_VALUES.has(normalizedLegacy)) return false;
     if (FALSE_ENV_VALUES.has(normalizedLegacy)) return true;
+  }
+
+  // Check feature flag DB override — supports runtime toggle without restart.
+  // Explicit runtime false keeps shared/public deployments able to re-enable SSRF protection.
+  try {
+    const dbValue = resolveFeatureFlag(PRIVATE_PROVIDER_URLS_ENV);
+    if (dbValue) {
+      const normalizedDbValue = dbValue.trim().toLowerCase();
+      if (FALSE_ENV_VALUES.has(normalizedDbValue)) return false;
+      if (TRUE_ENV_VALUES.has(normalizedDbValue)) return true;
+    }
+  } catch {
+    // DB not initialized yet — fall back to env-only/default check.
   }
 
   return true;

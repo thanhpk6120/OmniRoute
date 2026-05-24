@@ -6,7 +6,7 @@ import { getDbInstance } from "./core";
 import { backupDbFile } from "./backup";
 import { PROVIDER_ID_TO_ALIAS } from "@omniroute/open-sse/config/providerModels.ts";
 import { invalidateDbCache } from "./readCache";
-import { getProxyRegistryGeneration, resolveProxyForConnectionFromRegistry } from "./proxies";
+import { getProxyRegistryGeneration, resolveProxyForScopeFromRegistry } from "./proxies";
 import { getComboModelProvider as getComboEntryProvider } from "@/lib/combos/steps";
 import { requestBodyLimitMbFromEnv } from "@/shared/constants/bodySize";
 
@@ -82,7 +82,7 @@ export async function getSettings() {
   const db = getDbInstance();
   const rows = db.prepare("SELECT key, value FROM key_value WHERE namespace = 'settings'").all();
   const settings: Record<string, unknown> = {
-    cloudEnabled: false,
+    cloudEnabled: true,
     tailscaleEnabled: false,
     tailscaleUrl: "",
     stickyRoundRobinLimit: 3,
@@ -93,16 +93,28 @@ export async function getSettings() {
     mcpEnabled: false,
     a2aEnabled: false,
     hiddenSidebarItems: [],
+    sidebarSectionOrder: [],
+    sidebarItemOrder: {},
+    sidebarActivePreset: null,
     hideEndpointCloudflaredTunnel: false,
     hideEndpointTailscaleFunnel: false,
     hideEndpointNgrokTunnel: false,
     comboConfigMode: "guided",
     codexServiceTier: { enabled: false },
+    claudeFastMode: { enabled: false, supportedModels: ["claude-opus-4-7", "claude-opus-4-6"] },
     alwaysPreserveClientCache: "auto",
     idempotencyWindowMs: 5000,
     wsAuth: false,
     maxBodySizeMb: requestBodyLimitMbFromEnv(process.env.MAX_BODY_SIZE_BYTES),
     debugMode: true,
+    // LOCAL_ONLY manage-scope bypass policy defaults (T-011 / spec §Data Model).
+    // Preserves PR #2473 behaviour on migration — the bypass starts ENABLED
+    // for `/api/mcp/` so existing manage-scope Bearer clients keep working.
+    // Operators flip the kill-switch to false (or drop the prefix) via the
+    // Settings UI; the change hot-reloads through `applyRuntimeSettings` →
+    // `applyAuthzBypassSection` → `getAuthzBypassSnapshot()`.
+    localOnlyManageScopeBypassEnabled: true,
+    localOnlyManageScopeBypassPrefixes: ["/api/mcp/"],
   };
   for (const row of rows) {
     const record = toRecord(row);
@@ -405,7 +417,12 @@ export async function resetAllPricing() {
 
 // ──────────────── LKGP (Last Known Good Provider) ────────────────
 
-export async function getLKGP(comboName: string, modelId: string): Promise<string | null> {
+export interface LKGPRecord {
+  provider: string;
+  connectionId?: string;
+}
+
+export async function getLKGP(comboName: string, modelId: string): Promise<LKGPRecord | null> {
   const db = getDbInstance();
   const key = `${comboName}:${modelId}`;
   const row = db
@@ -413,18 +430,29 @@ export async function getLKGP(comboName: string, modelId: string): Promise<strin
     .get(key) as { value?: string } | undefined;
   if (!row?.value) return null;
   try {
-    return JSON.parse(row.value);
+    const parsed = JSON.parse(row.value);
+    if (typeof parsed === "object" && parsed !== null && "provider" in parsed) {
+      return parsed as LKGPRecord;
+    }
+    return { provider: String(parsed) };
   } catch {
-    return row.value;
+    return { provider: row.value };
   }
 }
 
-export async function setLKGP(comboName: string, modelId: string, providerId: string) {
+export async function setLKGP(
+  comboName: string,
+  modelId: string,
+  providerId: string,
+  connectionId?: string
+) {
   const db = getDbInstance();
   const key = `${comboName}:${modelId}`;
+  const value: LKGPRecord = { provider: providerId };
+  if (connectionId) value.connectionId = connectionId;
   db.prepare("INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('lkgp', ?, ?)").run(
     key,
-    JSON.stringify(providerId)
+    JSON.stringify(value)
   );
 }
 
@@ -575,20 +603,17 @@ export async function resolveProxyForConnection(connectionId: string) {
     return cached.result;
   }
 
-  const registryResolved = await resolveProxyForConnectionFromRegistry(connectionId);
-  if (registryResolved?.proxy) {
-    if (registryResolved.level === "account") {
-      cacheProxyResolution(
-        connectionId,
-        startGeneration,
-        startRegistryGeneration,
-        registryResolved
-      );
-    }
-    return registryResolved;
-  }
-
   const config = await getProxyConfig();
+
+  // Resolve by specificity across both proxy storage backends. The dashboard
+  // Custom tab still writes account/provider proxies to the legacy config,
+  // while Saved Proxy writes registry assignments. Do not let a registry-global
+  // fallback shadow a more-specific legacy account/provider proxy (#2601).
+  const registryAccount = await resolveProxyForScopeFromRegistry("account", connectionId);
+  if (registryAccount?.proxy) {
+    cacheProxyResolution(connectionId, startGeneration, startRegistryGeneration, registryAccount);
+    return registryAccount;
+  }
 
   if (connectionId && config.keys?.[connectionId]) {
     const result = { proxy: config.keys[connectionId], level: "key", levelId: connectionId };
@@ -605,6 +630,12 @@ export async function resolveProxyForConnection(connectionId: string) {
     const connectionRecord = toRecord(connection);
     const provider =
       typeof connectionRecord.provider === "string" ? connectionRecord.provider : null;
+
+    if (provider) {
+      const registryProvider = await resolveProxyForScopeFromRegistry("provider", provider);
+      if (registryProvider?.proxy) return registryProvider;
+    }
+
     if (config.combos && Object.keys(config.combos).length > 0) {
       const combos = db.prepare("SELECT id, data FROM combos").all();
       for (const comboRow of combos) {
@@ -637,6 +668,9 @@ export async function resolveProxyForConnection(connectionId: string) {
       };
     }
   }
+
+  const registryGlobal = await resolveProxyForScopeFromRegistry("global");
+  if (registryGlobal?.proxy) return registryGlobal;
 
   if (config.global) {
     return { proxy: config.global, level: "global", levelId: null };
