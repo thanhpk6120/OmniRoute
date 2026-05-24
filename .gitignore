@@ -65,7 +65,6 @@ next-env.d.ts
 
 # data and logs
 data/
-.data/
 logs/*
 test_output.log
 
@@ -125,7 +124,6 @@ vscode-extension/
 *.sqlite-journal
 
 # Compiled npm-package build artifact (not source, should not be in git)
-/app
 
 # IDEA
 .idea/
@@ -169,3 +167,9 @@ scripts/i18n/_pending-keys.json
 .agents/skills/implement-features/
 .claude/commands/implement-features-cc.md
 .claude/worktrees/
+
+.file-test/
+local_cache/
+test*
+.claude/
+/state/cancel-signal-state.json
