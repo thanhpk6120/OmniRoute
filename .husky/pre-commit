@@ -5,7 +5,7 @@ if ! command -v npx >/dev/null 2>&1; then
   exit 0
 fi
 
-npx lint-staged
+npx lint-staged --relative --concurrent false --max-arg-length 2000
 node scripts/check/check-docs-sync.mjs
 npm run check:any-budget:t11
 
