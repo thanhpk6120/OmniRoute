@@ -1,0 +1,40 @@
+# ──────────────────────────────────────────────────────────────────────
+#  OmniRoute — Server compose (build local từ source, không cần registry)
+# ──────────────────────────────────────────────────────────────────────
+#
+#  Flow: git pull → docker compose build → docker compose up -d
+#  Server tự build image từ source code, không cần Docker Hub/GHCR.
+#
+#  Data persistence:
+#    • ./data  ── bind-mounted to /app/data. Survives rebuild/recreate.
+#    • CRITICAL: never dùng `docker compose down -v`
+#
+#  Usage:
+#    ./deploy-server.sh          # auto git pull + build + restart
+#    ./deploy-server.sh --skip-pull   # build lại mà không pull
+#
+
+services:
+  omniroute:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner-base
+    image: omniroute:local
+    container_name: omniroute
+    restart: unless-stopped
+    ports:
+      - "${PORT:-20128}:20128"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DATA_DIR=/app/data
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.mjs"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
