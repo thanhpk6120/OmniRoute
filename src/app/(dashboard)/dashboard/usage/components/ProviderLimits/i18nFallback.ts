@@ -5,6 +5,13 @@ export type UsageTranslator = {
   has?: (key: string) => boolean;
 };
 
+function interpolate(template: string, values?: UsageTranslationValues): string {
+  if (!values) return template;
+  return template.replace(/\{(\w+)\}/g, (_, k) =>
+    k in values ? String(values[k]) : `{${k}}`
+  );
+}
+
 export function translateUsageOrFallback(
   t: UsageTranslator,
   key: string,
@@ -13,14 +20,14 @@ export function translateUsageOrFallback(
 ): string {
   try {
     if (typeof t.has === "function" && !t.has(key)) {
-      return fallback;
+      return interpolate(fallback, values);
     }
     const translated = values ? t(key, values) : t(key);
     if (!translated || translated === key || translated === `usage.${key}`) {
-      return fallback;
+      return interpolate(fallback, values);
     }
     return translated;
   } catch {
-    return fallback;
+    return interpolate(fallback, values);
   }
 }
