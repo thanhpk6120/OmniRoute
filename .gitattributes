@@ -1,0 +1,6 @@
+# Ensure shell scripts always use LF line endings.
+# On Windows, git autocrlf can convert *.sh to CRLF on checkout, which breaks
+# Docker images built locally: the entrypoint shebang becomes `#!/bin/sh\r`,
+# and the kernel fails with "exec ...: no such file or directory".
+# Forcing eol=lf keeps scripts executable inside Linux containers.
+*.sh text eol=lf

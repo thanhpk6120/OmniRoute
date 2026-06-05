@@ -121,6 +121,9 @@ backup/
 /dist/
 /.next/
 
+# Local Docker image artifacts (docker save tarballs) — pushed to server via scp, never to git
+/build/
+
 # Electron
 electron/dist-electron/
 electron/node_modules/
@@ -191,7 +194,11 @@ scripts/i18n/_pending-keys.json
 .antigravitycli/
 .claude/
 .kiro/
+local_cache/
 
 # PR Reviews and local feedback files
 pr_reviews*.json
 
+/docker-build.log
+/state/cancel-signal-state.json
+/tests-file/deepseek-error.txt
