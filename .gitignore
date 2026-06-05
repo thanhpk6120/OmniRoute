@@ -9,6 +9,18 @@ _ideia/
 _mono_repo/
 _references/
 _tasks/
+.agents/**
+.claude/**
+.gemini/**
+.config/**
+.data/**
+.logs/**
+.tests/**
+.coverage/**
+.dist/**
+.next/**
+.build/**
+.out/**
 
 
 # Memory Bank and Cursor rules (local-only AI agent context)
@@ -121,6 +133,8 @@ vscode-extension/
 *.sqlite-shm
 *.sqlite-wal
 *.sqlite-journal
+
+# Compiled npm-package build artifact (not source, should not be in git)
 
 # IDEA
 .idea/
