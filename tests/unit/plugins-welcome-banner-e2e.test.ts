@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 
 const FIXTURE_DIR = join(tmpdir(), `omniroute_plugin_test_${Date.now()}`);
 
@@ -51,9 +52,8 @@ function createFixturePlugin(name: string, opts?: { onResponse?: boolean; onRequ
 // ── Manifest validation ──
 
 test("plugin manifest validation", async (t) => {
-  const { validateManifest, safeValidateManifest, applyDefaults } = await import(
-    "../../src/lib/plugins/manifest.ts"
-  );
+  const { validateManifest, safeValidateManifest, applyDefaults } =
+    await import("../../src/lib/plugins/manifest.ts");
 
   await t.test("valid manifest parses with defaults", () => {
     const result = validateManifest({
@@ -136,8 +136,22 @@ test("plugin hooks system", async (t) => {
 
   await t.test("registerHook registers and sorts by priority", () => {
     const calls: string[] = [];
-    registerHook("onRequest", "plugin-b", () => { calls.push("b"); }, 200);
-    registerHook("onRequest", "plugin-a", () => { calls.push("a"); }, 100);
+    registerHook(
+      "onRequest",
+      "plugin-b",
+      () => {
+        calls.push("b");
+      },
+      200
+    );
+    registerHook(
+      "onRequest",
+      "plugin-a",
+      () => {
+        calls.push("a");
+      },
+      100
+    );
     const hooks = getHooks("onRequest");
     assert.equal(hooks.length, 2);
     assert.equal(hooks[0].pluginName, "plugin-a");
@@ -174,9 +188,30 @@ test("plugin hooks system", async (t) => {
 
   await t.test("emitHook calls all handlers in order", async () => {
     const order: number[] = [];
-    registerHook("onTest", "h1", () => { order.push(1); }, 100);
-    registerHook("onTest", "h2", () => { order.push(2); }, 200);
-    registerHook("onTest", "h3", () => { order.push(3); }, 150);
+    registerHook(
+      "onTest",
+      "h1",
+      () => {
+        order.push(1);
+      },
+      100
+    );
+    registerHook(
+      "onTest",
+      "h2",
+      () => {
+        order.push(2);
+      },
+      200
+    );
+    registerHook(
+      "onTest",
+      "h3",
+      () => {
+        order.push(3);
+      },
+      150
+    );
     await emitHook("onTest", {});
     assert.deepEqual(order, [1, 3, 2]);
     resetHooks();
@@ -184,8 +219,22 @@ test("plugin hooks system", async (t) => {
 
   await t.test("emitHook swallows handler errors", async () => {
     const calls: string[] = [];
-    registerHook("onErr", "bad", () => { throw new Error("boom"); }, 100);
-    registerHook("onErr", "good", () => { calls.push("ok"); }, 200);
+    registerHook(
+      "onErr",
+      "bad",
+      () => {
+        throw new Error("boom");
+      },
+      100
+    );
+    registerHook(
+      "onErr",
+      "good",
+      () => {
+        calls.push("ok");
+      },
+      200
+    );
     await emitHook("onErr", {});
     assert.deepEqual(calls, ["ok"]);
     resetHooks();
@@ -203,7 +252,14 @@ test("plugin hooks system", async (t) => {
   await t.test("emitHookBlocking returns early on blocked", async () => {
     const calls: string[] = [];
     registerHook("onBlock2", "blocker", () => ({ blocked: true, response: { error: "no" } }), 100);
-    registerHook("onBlock2", "after", () => { calls.push("after"); }, 200);
+    registerHook(
+      "onBlock2",
+      "after",
+      () => {
+        calls.push("after");
+      },
+      200
+    );
     const result = await emitHookBlocking("onBlock2", {});
     assert.equal(result.blocked, true);
     assert.equal(calls.length, 0);
@@ -212,7 +268,13 @@ test("plugin hooks system", async (t) => {
 
   await t.test("runOnRequest delegates to emitHookBlocking", async () => {
     registerHook("onRequest", "req", () => ({ metadata: { seen: true } }), 100);
-    const result = await runOnRequest({ requestId: "1", body: {}, model: "gpt-4", provider: "openai", metadata: {} });
+    const result = await runOnRequest({
+      requestId: "1",
+      body: {},
+      model: "gpt-4",
+      provider: "openai",
+      metadata: {},
+    });
     assert.deepEqual(result.metadata, { seen: true });
     resetHooks();
   });
@@ -230,7 +292,14 @@ test("plugin hooks system", async (t) => {
 
   await t.test("runOnError is fire-and-forget", async () => {
     let called = false;
-    registerHook("onError", "err-handler", () => { called = true; }, 100);
+    registerHook(
+      "onError",
+      "err-handler",
+      () => {
+        called = true;
+      },
+      100
+    );
     await runOnError(
       { requestId: "1", body: {}, model: "gpt-4", provider: "openai", metadata: {} },
       new Error("test")
@@ -282,18 +351,16 @@ test("welcome banner PoC plugin lifecycle", async (t) => {
   });
 
   await t.test("plugin module exports correct interface", async () => {
-    const mod = await import(join(pluginDir, "index.mjs"));
+    const mod = await import(pathToFileURL(join(pluginDir, "index.mjs")).href);
     assert.ok(mod.plugin, "should export plugin object");
     assert.equal(mod.plugin.name, "welcome-banner");
     assert.equal(typeof mod.plugin.onResponse, "function");
   });
 
   await t.test("onResponse injects banner into response", async () => {
-    const mod = await import(join(pluginDir, "index.mjs"));
+    const mod = await import(pathToFileURL(join(pluginDir, "index.mjs")).href);
     const response = {
-      choices: [
-        { message: { role: "assistant", content: "Hello!" } },
-      ],
+      choices: [{ message: { role: "assistant", content: "Hello!" } }],
     };
     const result = await mod.plugin.onResponse({}, response);
     assert.ok(result.choices[0].message.content.includes("[Welcome to OmniRoute"));
@@ -301,18 +368,16 @@ test("welcome banner PoC plugin lifecycle", async (t) => {
   });
 
   await t.test("onResponse handles streaming delta", async () => {
-    const mod = await import(join(pluginDir, "index.mjs"));
+    const mod = await import(pathToFileURL(join(pluginDir, "index.mjs")).href);
     const response = {
-      choices: [
-        { delta: { content: "stream chunk" } },
-      ],
+      choices: [{ delta: { content: "stream chunk" } }],
     };
     const result = await mod.plugin.onResponse({}, response);
     assert.ok(result.choices[0].delta.content.includes("[Welcome to OmniRoute"));
   });
 
   await t.test("onResponse handles null response gracefully", async () => {
-    const mod = await import(join(pluginDir, "index.mjs"));
+    const mod = await import(pathToFileURL(join(pluginDir, "index.mjs")).href);
     const result = await mod.plugin.onResponse({}, null);
     assert.equal(result, null);
   });

@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { arch, platform, tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, posix, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -316,11 +316,11 @@ export function buildSmokeEnv({
     smokeEnv.TEMP ||= join(dataDir, "tmp");
     smokeEnv.TMP ||= smokeEnv.TEMP;
   } else {
-    smokeEnv.HOME = join(dataDir, "home");
-    smokeEnv.XDG_CONFIG_HOME = join(dataDir, "config");
-    smokeEnv.XDG_CACHE_HOME = join(dataDir, "cache");
-    smokeEnv.XDG_DATA_HOME = join(dataDir, "data");
-    smokeEnv.TMPDIR ||= join(dataDir, "tmp");
+    smokeEnv.HOME = posix.join(dataDir, "home");
+    smokeEnv.XDG_CONFIG_HOME = posix.join(dataDir, "config");
+    smokeEnv.XDG_CACHE_HOME = posix.join(dataDir, "cache");
+    smokeEnv.XDG_DATA_HOME = posix.join(dataDir, "data");
+    smokeEnv.TMPDIR ||= posix.join(dataDir, "tmp");
   }
 
   const baseEnv = {

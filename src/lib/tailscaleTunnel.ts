@@ -345,6 +345,17 @@ function buildTailscaleArgsSync(...args: string[]) {
 }
 
 async function readJsonCommand(binaryPath: string, args: string[], timeout = 5000) {
+  const testPayload = args.includes("funnel")
+    ? process.env.TAILSCALE_TEST_FUNNEL_STATUS_JSON
+    : process.env.TAILSCALE_TEST_STATUS_JSON;
+  if (testPayload) {
+    try {
+      return JSON.parse(testPayload) as JsonRecord;
+    } catch {
+      return null;
+    }
+  }
+
   try {
     const { stdout } = await execFileAsync(binaryPath, args, {
       timeout,
@@ -618,6 +629,12 @@ export async function startTailscaleLogin({
     return { alreadyLoggedIn: true };
   }
 
+  const testLoginOutput = process.env.TAILSCALE_TEST_LOGIN_OUTPUT;
+  if (testLoginOutput) {
+    const authUrl = extractTailscaleAuthUrl(testLoginOutput);
+    if (authUrl) return { authUrl };
+  }
+
   const resolvedHostname = toNonEmptyString(hostname) || (await getDefaultHostname());
   const spawnArgs = await buildTailscaleArgs(
     "up",
@@ -703,6 +720,16 @@ export async function startTailscaleFunnel(
   const resolution = await resolveBinary();
   if (!resolution.binaryPath) {
     throw new Error("Tailscale is not installed");
+  }
+
+  const testFunnelOutput = process.env.TAILSCALE_TEST_FUNNEL_OUTPUT;
+  if (testFunnelOutput) {
+    const tunnelUrl = extractTailscaleFunnelUrl(testFunnelOutput);
+    if (tunnelUrl) return { tunnelUrl };
+    const enableUrl = extractTailscaleEnableUrl(testFunnelOutput);
+    if (/funnel is not enabled/i.test(testFunnelOutput) || enableUrl) {
+      return { funnelNotEnabled: true, enableUrl };
+    }
   }
 
   await resetTailscaleFunnel(resolution.binaryPath);

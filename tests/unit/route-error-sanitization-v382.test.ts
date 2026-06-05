@@ -44,7 +44,11 @@ test("db-backups/import awaits getSettings() before re-hydrating the system prom
 
 test("cache/stats route routes errors through sanitizeErrorMessage", () => {
   const src = readRoute(CACHE_STATS);
-  assert.match(src, /import \{ sanitizeErrorMessage \}/, "must import sanitizeErrorMessage");
+  assert.match(
+    src,
+    /import\s*\{[^}]*sanitizeErrorMessage[^}]*\}/,
+    "must import sanitizeErrorMessage"
+  );
   assert.match(src, /sanitizeErrorMessage\(error\)/, "catch blocks must sanitize the error");
   assert.ok(
     !/\(error as Error\)\.message/.test(src),
@@ -54,7 +58,11 @@ test("cache/stats route routes errors through sanitizeErrorMessage", () => {
 
 test("hermes-agent-settings GET sanitizes its error response (no raw String(error))", () => {
   const src = readRoute(HERMES);
-  assert.match(src, /import \{ sanitizeErrorMessage \}/, "must import sanitizeErrorMessage");
+  assert.match(
+    src,
+    /import\s*\{[^}]*sanitizeErrorMessage[^}]*\}/,
+    "must import sanitizeErrorMessage"
+  );
   assert.match(src, /sanitizeErrorMessage\(error\)/, "GET catch must sanitize the error");
   assert.ok(
     !/error: String\(error\)/.test(src),

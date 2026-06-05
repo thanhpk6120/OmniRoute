@@ -11,11 +11,27 @@ process.env.API_KEY_SECRET = "test-secret-regen";
 const core = await import("../../src/lib/db/core.ts");
 const apiKeysDb = await import("../../src/lib/db/apiKeys.ts");
 
+function rmDirWithRetry(dir: string) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (
+        attempt === 4 ||
+        !["EBUSY", "ENOTEMPTY", "EPERM"].includes((error as NodeJS.ErrnoException).code || "")
+      )
+        throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * (attempt + 1));
+    }
+  }
+}
+
 function reset() {
   core.resetDbInstance();
   apiKeysDb.resetApiKeyState();
   if (fs.existsSync(TEST_DATA_DIR)) {
-    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+    rmDirWithRetry(TEST_DATA_DIR);
   }
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
 }
@@ -25,7 +41,9 @@ test.beforeEach(() => {
 });
 
 test.after(() => {
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  try {
+    rmDirWithRetry(TEST_DATA_DIR);
+  } catch {}
 });
 
 test("regenerateApiKey creates a new key and invalidates the old one", async () => {

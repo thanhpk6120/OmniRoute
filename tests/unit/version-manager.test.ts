@@ -233,7 +233,12 @@ async function prepareInstalledVersions(versions) {
   try {
     fs.unlinkSync(symlinkPath);
   } catch {}
-  fs.symlinkSync(path.join(binDir, "cliproxyapi-2.0.0", "CLIProxyAPI"), symlinkPath);
+  const targetBinary = path.join(binDir, "cliproxyapi-2.0.0", "CLIProxyAPI");
+  if (process.platform === "win32") {
+    fs.copyFileSync(targetBinary, symlinkPath);
+  } else {
+    fs.symlinkSync(targetBinary, symlinkPath);
+  }
 }
 
 async function flushAsyncTurns(count = 3) {

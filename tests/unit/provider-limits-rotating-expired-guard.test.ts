@@ -9,12 +9,13 @@ const TEST_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omniroute-rotating-
 process.env.DATA_DIR = TEST_DATA_DIR;
 process.env.API_KEY_SECRET = process.env.API_KEY_SECRET || "rotating-expired-guard-secret";
 
-const { quotaPathShouldMarkExpired, shouldAttemptRotatingRefresh } = await import(
-  "../../src/lib/usage/providerLimits.ts"
-);
+const { quotaPathShouldMarkExpired, shouldAttemptRotatingRefresh } =
+  await import("../../src/lib/usage/providerLimits.ts");
 
 test.after(() => {
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  try {
+    fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  } catch {}
 });
 
 // Regression: the quota sync reuses a rotating provider's (possibly expired)
@@ -56,7 +57,11 @@ test("an already-expired connection is left untouched (no redundant write)", () 
 test("bulk path never refreshes rotating providers (preserves #3019)", () => {
   for (const provider of ["codex", "openai", "claude", "kiro", "qwen", "gitlab-duo"]) {
     assert.equal(shouldAttemptRotatingRefresh(provider, undefined), false, `${provider} bulk`);
-    assert.equal(shouldAttemptRotatingRefresh(provider, false), false, `${provider} explicit false`);
+    assert.equal(
+      shouldAttemptRotatingRefresh(provider, false),
+      false,
+      `${provider} explicit false`
+    );
   }
 });
 

@@ -176,6 +176,7 @@ scripts/i18n/_pending-keys.json
 .agents/
 .antigravitycli/
 .claude/
+.kiro/
 
 # PR Reviews and local feedback files
 pr_reviews*.json

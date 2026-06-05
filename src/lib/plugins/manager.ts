@@ -8,7 +8,7 @@
  */
 
 import { mkdir, cp, rm, rename, realpath, readFile } from "fs/promises";
-import { join, dirname, resolve, sep } from "path";
+import { join, dirname, resolve, sep, relative, isAbsolute } from "path";
 import { randomUUID } from "crypto";
 import { logger } from "../../../open-sse/utils/logger.ts";
 import { getDefaultPluginDir, scanPluginDir } from "./scanner";
@@ -84,7 +84,8 @@ function assertWithinPluginDir(pluginRoot: string, target: string): void {
 function assertEntryPointWithinDest(destDir: string, entryPoint: string): void {
   const root = resolve(destDir);
   const ep = resolve(entryPoint);
-  if (!ep.startsWith(root + sep)) {
+  const rel = relative(root, ep);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error(
       `Plugin manifest.main resolves outside plugin directory: "${ep}" escapes "${root}"`
     );
@@ -362,10 +363,11 @@ class PluginManager {
       throw new Error(`Plugin directory '${row.pluginDir}' does not exist`);
     }
     const resolvedEntry = await realpath(entryPoint).catch(() => null);
-    if (
-      !resolvedEntry ||
-      (!resolvedEntry.startsWith(resolvedPluginDir + "/") && resolvedEntry !== resolvedPluginDir)
-    ) {
+    if (!resolvedEntry) {
+      throw new Error(`Plugin '${name}' entry point escapes plugin directory`);
+    }
+    const rel = relative(resolvedPluginDir, resolvedEntry);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
       throw new Error(`Plugin '${name}' entry point escapes plugin directory`);
     }
 

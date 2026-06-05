@@ -24,7 +24,48 @@ const originalEnv = {
 };
 
 async function createFakeTailscaleBinary() {
-  const fakePath = path.join(TEST_DATA_DIR, "fake-tailscale.sh");
+  const fakePath = path.join(
+    TEST_DATA_DIR,
+    process.platform === "win32" ? "fake-tailscale.cmd" : "fake-tailscale.sh"
+  );
+  if (process.platform === "win32") {
+    await fs.writeFile(
+      fakePath,
+      `@echo off
+set args=%*
+echo %args% | findstr /C:"funnel status --json" >nul
+if not errorlevel 1 (
+  if defined TAILSCALE_TEST_FUNNEL_STATUS_JSON <nul set /p=%TAILSCALE_TEST_FUNNEL_STATUS_JSON%
+  if defined TAILSCALE_TEST_FUNNEL_STATUS_JSON exit /b 0
+  exit /b 1
+)
+echo %args% | findstr /C:"status --json" >nul
+if not errorlevel 1 (
+  if defined TAILSCALE_TEST_STATUS_JSON <nul set /p=%TAILSCALE_TEST_STATUS_JSON%
+  if defined TAILSCALE_TEST_STATUS_JSON exit /b 0
+  exit /b 1
+)
+echo %args% | findstr /C:"funnel --bg reset" >nul
+if not errorlevel 1 exit /b 0
+echo %args% | findstr /C:"funnel --bg" >nul
+if not errorlevel 1 (
+  if defined TAILSCALE_TEST_FUNNEL_OUTPUT <nul set /p=%TAILSCALE_TEST_FUNNEL_OUTPUT%
+  if defined TAILSCALE_TEST_FUNNEL_EXIT_CODE exit /b %TAILSCALE_TEST_FUNNEL_EXIT_CODE%
+  exit /b 0
+)
+echo %args% | findstr /C:"up --accept-routes" >nul
+if not errorlevel 1 (
+  if defined TAILSCALE_TEST_LOGIN_OUTPUT <nul set /p=%TAILSCALE_TEST_LOGIN_OUTPUT%
+  if defined TAILSCALE_TEST_LOGIN_EXIT_CODE exit /b %TAILSCALE_TEST_LOGIN_EXIT_CODE%
+  exit /b 0
+)
+exit /b 1
+`,
+      "utf8"
+    );
+    return fakePath;
+  }
+
   await fs.writeFile(
     fakePath,
     `#!/usr/bin/env bash

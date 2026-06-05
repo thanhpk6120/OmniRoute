@@ -44,10 +44,11 @@ export interface LoadedPlugin {
 
 const PLUGIN_HOST_SCRIPT = `
 import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 
 const pluginPath = process.argv[2];
-const plugin = await import(pluginPath);
+const plugin = await import(pathToFileURL(pluginPath).href);
 const exports = plugin.default || plugin;
 
 // Send ready signal

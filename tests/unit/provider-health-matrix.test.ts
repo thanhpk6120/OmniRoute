@@ -23,9 +23,25 @@ const accountFallback = await import("@omniroute/open-sse/services/accountFallba
 
 const PROVIDER = "matrix-test-provider";
 
+function rmDirWithRetry(dir: string) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (
+        attempt === 4 ||
+        !["EBUSY", "ENOTEMPTY", "EPERM"].includes((error as NodeJS.ErrnoException).code || "")
+      )
+        throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * (attempt + 1));
+    }
+  }
+}
+
 async function resetStorage() {
   core.resetDbInstance();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  rmDirWithRetry(TEST_DATA_DIR);
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   for (const lockout of accountFallback.getAllModelLockouts()) {
     if (lockout.provider === PROVIDER) {
@@ -46,7 +62,9 @@ test.beforeEach(async () => {
 
 test.after(async () => {
   await resetStorage();
-  fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
+  try {
+    rmDirWithRetry(TEST_DATA_DIR);
+  } catch {}
 
   if (ORIGINAL_DATA_DIR === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = ORIGINAL_DATA_DIR;
